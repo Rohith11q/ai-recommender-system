@@ -6,11 +6,66 @@ import re
 import requests
 import html as html_lib
 from functools import lru_cache
-from db import init_db, get_connection
-from auth import signup_user, login_user
+from db import get_db
+from auth import register_user, login_user, add_to_watchlist, get_watchlist
+from auth import (
+    register_user,
+    login_user,
+    add_to_watchlist,
+    get_watchlist,
+    remove_from_watchlist   # ✅ REQUIRED
+)
+
+# ---------------- AFFILIATE LINK HELPERS ----------------
+
+AMAZON_AFFILIATE_TAG = "trendypick0de-21"  # 🔁 replace with your real tag
+
+def amazon_movie_affiliate_link(title):
+    if not title:
+        return None
+    q = title.replace(" ", "+")
+    return f"https://www.amazon.in/s?k={q}+movie&tag={AMAZON_AFFILIATE_TAG}"
+
+def amazon_book_affiliate_link(title, author=""):
+    if not title:
+        return None
+    q = f"{title} {author}".replace(" ", "+")
+    return f"https://www.amazon.in/s?k={q}&tag={AMAZON_AFFILIATE_TAG}"
+
+
+def goto_page(page):
+    st.session_state.page = page
+    st.session_state._page_changed = True
+    st.rerun()
+
+if "user" not in st.session_state:
+    st.session_state.user = None
+if "page" not in st.session_state:
+    st.session_state.page = "login"   
+if "selected_title" not in st.session_state:
+    st.session_state.selected_title = ""
+if "mode" not in st.session_state:
+    st.session_state.mode = "Normal Similarity Recommendation"
+if "content_type" not in st.session_state:
+    st.session_state.content_type = "Movies"
+if "last_recs" not in st.session_state:
+    st.session_state.last_recs = None
+if "detail_item" not in st.session_state:
+    st.session_state.detail_item = None
 
 if "search_text" not in st.session_state:
     st.session_state.search_text = ""
+if "current_item" not in st.session_state:
+    st.session_state.current_item = None
+
+if "recs" not in st.session_state:
+    st.session_state.recs = []
+
+if "do_recommend" not in st.session_state:
+    st.session_state.do_recommend = False
+if "navigating_back" not in st.session_state:
+    st.session_state.navigating_back = False
+    
 
 # -------------------------
 # Optional API keys (create config.py if you want)
@@ -23,6 +78,66 @@ except Exception:
 # -------------------------
 # Page config + style (black -> deep-red gradient) + overlay CSS
 st.set_page_config(page_title="AI Recommender System", layout="wide")
+# -------- Dynamic Background (Login Only) --------
+
+if st.session_state.page == "login":
+    st.markdown("""
+    <style>
+    .stApp {
+        background: none !important;
+    }
+
+    .stApp::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        background-image: url("https://images-wixmp-ed30a86b8c4ca887773594c2.wixmp.com/f/f562aaf4-5dbb-4603-a32b-6ef6c2230136/dh0w8qv-9d8ee6b2-b41a-4681-ab9b-8a227560dc75.jpg/v1/fill/w_1192,h_670,q_70,strp/the_netflix_login_background__canada__2024___by_logofeveryt_dh0w8qv-pre.jpg?token=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1cm46YXBwOjdlMGQxODg5ODIyNjQzNzNhNWYwZDQxNWVhMGQyNmUwIiwiaXNzIjoidXJuOmFwcDo3ZTBkMTg4OTgyMjY0MzczYTVmMGQ0MTVlYTBkMjZlMCIsIm9iaiI6W1t7ImhlaWdodCI6Ijw9NzIwIiwicGF0aCI6Ii9mL2Y1NjJhYWY0LTVkYmItNDYwMy1hMzJiLTZlZjZjMjIzMDEzNi9kaDB3OHF2LTlkOGVlNmIyLWI0MWEtNDY4MS1hYjliLThhMjI3NTYwZGM3NS5qcGciLCJ3aWR0aCI6Ijw9MTI4MCJ9XV0sImF1ZCI6WyJ1cm46c2VydmljZTppbWFnZS5vcGVyYXRpb25zIl19.FScrpAAFnKqBVKwe2syeiOww6mfH6avq-DRHZ_uFVNw");
+        background-size: cover;
+        background-position: center bottom;
+        background-repeat: no-repeat;
+        opacity: 1.45;
+        filter: blur(2px) saturate(90%) contrast(105%);
+    }
+    </style>
+    """, unsafe_allow_html=True
+    )
+
+else:
+    st.markdown("""
+    <style>
+    .stApp {
+        background: linear-gradient(180deg, #000000 0%, #180000 50%);
+    }
+    </style>
+    """, unsafe_allow_html=True
+    )
+
+
+st.markdown("""
+<style>
+.affiliate-btn {
+    display: inline-block;
+    padding: 12px 20px;
+    margin-top: 10px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, #000000, #bfa14a);
+    color: #ffd700 !important;
+    font-weight: bold;
+    text-decoration: none;
+    box-shadow: 0 0 12px rgba(255, 215, 0, 0.6);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.affiliate-btn:hover {
+    transform: translateY(-2px);
+    opacity: 0.98;
+    background: linear-gradient(135deg, #1a1a1a, #000000);
+    box-shadow: 0 0 18px rgba(255, 215, 0, 0.9);
+    box-shadow: 0 10px 26px rgba(255, 215, 0, 0.9);
+}
+</style>
+""", unsafe_allow_html=True)
+
 
 st.markdown(
     """
@@ -34,34 +149,35 @@ st.markdown(
       --accent-a: #000000; /* button gradient start: black */
       --accent-b: #7a0000; /* button gradient end: deep red */
     }
+
     .stApp {
-      background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
+      background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 50%);
       color: #f7efe9;
       font-family: "Segoe UI", Roboto, Arial, sans-serif;
     }
     header { display:none; }
-    .title { font-size:40px; font-weight:800; margin-bottom:6px; color:#fff; }
+    .title { font-size:40px; font-weight:800; margin-bottom:6px; color:#fc0505; }
     .subtitle { color: var(--muted); margin-bottom:14px; }
     .card { background: linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.00)); padding:16px; border-radius:12px; border: 1px solid rgba(255,255,255,0.02); margin-bottom:18px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
 
-    /* New button style: black -> deep-red gradient for all stButtons */
+    /* Buttons: black -> gold (same as affiliate buttons) */
     .stButton>button {
-      display:block;
-      text-align:center;
-      width:100%;
-      padding:10px 14px;
-      border-radius:12px;
-      border: none;
-      color: white;
-      font-weight:700;
-      background: linear-gradient(90deg, var(--accent-a), var(--accent-b));
-      box-shadow: 0 8px 20px rgba(122,0,0,0.18);
-      transition: transform 0.08s ease, box-shadow 0.08s ease, opacity 0.08s ease;
+      display: inline-block;
+      padding: 12px 18px;
+      margin: 8px 8px 8px 0;
+      background: linear-gradient(135deg, #000000, #2b2b2b);
+      color: #FFD700 !important;
+      font-weight: bold;
+      border-radius: 10px;
+      text-decoration: none;
+      border: 1px solid #FFD700;
+      box-shadow: 0 0 12px rgba(255, 215, 0, 0.6);
     }
     .stButton>button:hover {
       transform: translateY(-2px);
-      cursor:pointer;
-      opacity:0.98;
+      opacity: 0.98;
+      box-shadow: 0 0 18px rgba(255, 215, 0, 0.9);
+      box-shadow: 0 10px 26px rgba(255, 215, 0, 0.9);
     }
 
     .rec-card { background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); border-radius:12px; padding:12px; text-align:center; box-shadow: 0 6px 18px rgba(0,0,0,0.6); margin-bottom:10px; min-height: 360px; display:flex; flex-direction:column; align-items:center; justify-content:flex-start; position:relative; }
@@ -80,34 +196,13 @@ st.markdown(
     }
     .rec-card:hover .poster-overlay { opacity:1; }
 
-    .selected-banner { background: linear-gradient(90deg,#b22222,#7a0000); color: #fff; padding:12px; border-radius:10px; font-weight:700; margin-top:8px; margin-bottom:10px; }
+    .selected-banner { background: linear-gradient(90deg,#b22222,#7a0000); color: #ff0303; padding:12px; border-radius:10px; font-weight:700; margin-top:8px; margin-bottom:10px; }
     .css-18e3th9 { padding-top: 28px; padding-left: 28px; padding-right: 28px; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# -------------------------
-# Session state defaults
-if "user" not in st.session_state:
-    st.session_state.user = None
-
-init_db()
-
-if "page" not in st.session_state:
-    st.session_state.page = "login"
-if "selected_title" not in st.session_state:
-    st.session_state.selected_title = ""
-if "mode" not in st.session_state:
-    st.session_state.mode = "Normal Mode (Similarity)"
-if "content_type" not in st.session_state:
-    st.session_state.content_type = "Movies"
-if "last_recs" not in st.session_state:
-    st.session_state.last_recs = None
-if "watchlist" not in st.session_state:
-    st.session_state.watchlist = []
-if "detail_item" not in st.session_state:
-    st.session_state.detail_item = None
 
 def go_to(page_name):
     st.session_state.page = page_name
@@ -449,11 +544,30 @@ def get_similar_books(selected_title, mode, target_mood=None, goals=None, topk=1
         results.append({"title": title, "poster_url": poster, "score": score, "explanation": explanation})
     results = sorted(results, key=lambda x: x["score"], reverse=True)
     return results[:topk]
+# ---------------- SIDEBAR (Visible only after login & not on login page) ----------------
+if st.session_state.user and st.session_state.page != "login":
+    st.sidebar.markdown(f"### 👋 Welcome, {st.session_state.user['name']}")
+
+    if st.sidebar.button("View Watchlist"):
+        go_to("watchlist")
+        st.rerun()
+
+    if st.sidebar.button("Logout"):
+        st.session_state.clear()
+        st.session_state.page = "login"
+        st.rerun()
+
 
 # -------------------------
 # Pages: login / mode / search / detail
 # LOGIN page
 if st.session_state.page == "login":
+    
+    # Add login page identifier for background styling
+    st.markdown('<div class="login-page"></div>', unsafe_allow_html=True)
+
+
+
     st.markdown("<div class='title'>AI Book & Movie Recommendation System</div>", unsafe_allow_html=True)
 
     tab1, tab2 = st.tabs(["Sign In", "Sign Up"])
@@ -463,38 +577,32 @@ if st.session_state.page == "login":
         password = st.text_input("Password", type="password", key="login_pass")
 
         if st.button("Sign In"):
-            user = login_user(email, password)
-            if user:
-                st.session_state.user = user
-                st.session_state.user_email = user["email"]
-                load_conn = get_connection()
-                cur = load_conn.cursor()
-                cur.execute(
-                    "SELECT title FROM watchlist WHERE user_id=%s",
-                    (user["id"],)
-                )
-                st.session_state.watchlist = [r[0] for r in cur.fetchall()]
-                cur.close()
-                load_conn.close()
+            success, data = login_user(email, password)
 
+            if success:
+                st.session_state.user = data   # ✅ data MUST be a dict
                 go_to("mode")
                 st.rerun()
             else:
-                st.error("Invalid email or password")
+                st.error(data)
+
 
     with tab2:
+        name = st.text_input("Name")
         email = st.text_input("Email", key="signup_email")
         password = st.text_input("Password", type="password", key="signup_pass")
 
         if st.button("Create Account"):
-            if signup_user(email, password):
-                st.success("Account created. Please sign in.")
+            success, msg = register_user(email, password, name)
+            if success:
+                st.success(msg)
             else:
-                st.error("Email already exists")
+                st.error(msg)
 
 
 # MODE page
 elif st.session_state.page == "mode":
+
     st.markdown('<div class="title">Recommendation Mode & Preferences</div>', unsafe_allow_html=True)
     mode_local = st.radio(
         "Recommendation Mode",
@@ -543,10 +651,11 @@ elif st.session_state.page == "mode":
 
 # SEARCH & RECOMMEND page
 elif st.session_state.page == "search":
+   
     colA, colB = st.columns([6,1])
     with colB:
         with st.expander("👤 Profile"):
-            st.write(st.session_state.user_email)
+            st.write(st.session_state.user["email"])
             if st.button("View Watchlist"):
                 go_to("watchlist")
                 st.rerun()
@@ -563,13 +672,11 @@ elif st.session_state.page == "search":
             "<div class='subtitle'>Type a partial title; matching results appear below. Click a match then \"Recommend\".</div>",
             unsafe_allow_html=True
         )
-        st.markdown('<div class="card search-box">', unsafe_allow_html=True)
         query = st.text_input(
             "",
             value=st.session_state.search_text,
             placeholder="Type a movie or book title (partial name)..."
         )
-
         st.markdown("</div>", unsafe_allow_html=True)
 
     # titles list
@@ -609,7 +716,7 @@ elif st.session_state.page == "search":
         if len(matches) > 8:
             st.markdown('</div>', unsafe_allow_html=True)
     else:
-        st.markdown("<div style='color:var(--muted);padding:8px 0'>No matches yet — keep typing</div>", unsafe_allow_html=True)
+        st.markdown("<div style='color:var(--muted);padding:8px 0'>Click Recommend to See Recommendations</div>", unsafe_allow_html=True)
 
     rcol1, rcol2 = st.columns([1,1])
     with rcol1:
@@ -749,7 +856,7 @@ elif st.session_state.page == "search":
                 # ✅ EXPLANATION
                 st.caption(safe_explain)
 
-
+             
                 # View Details button (reliable Python callback)
                 view_key = f"view_{i}_{safe_title}"
                 if st.button("View Details", key=view_key):
@@ -785,18 +892,10 @@ elif st.session_state.page == "search":
                     st.session_state.detail_item = detail
                     go_to("detail")
                     st.rerun()
-    # sidebar: watchlist
-    st.sidebar.markdown("## About")
-    st.sidebar.write("AI Recommender — Mood & Goal based book and movie suggestions.")
-    st.sidebar.markdown("## Watchlist")
-    if st.session_state.watchlist:
-        for t in st.session_state.watchlist:
-            st.sidebar.write("- " + t)
-    else:
-        st.sidebar.write("_No saved items yet_")
 
 # DETAIL page
 elif st.session_state.page == "detail":
+    
     item = st.session_state.get("detail_item", None)
     if not item:
         st.warning("No detail available — returning to recommendations.")
@@ -808,9 +907,19 @@ elif st.session_state.page == "detail":
         # Back button
         back_col, spacer = st.columns([1,5])
         with back_col:
-            if st.button("← Back to recommendations", key="btn_back_from_detail"):
-                go_to("search")
-                st.rerun()
+            if st.button("← Back to Recommendations", key="btn_back_from_detail"):
+                # clear detail-related state FIRST
+                st.session_state.detail_item = None
+                st.session_state.last_recs = None
+                st.session_state.recs = []
+                st.session_state.do_recommend = False
+
+                # behaviour-1 cleanup
+                if st.session_state.mode == "Normal Similarity Recommendation":
+                    st.session_state.selected_title = ""
+                    st.session_state.search_text = ""
+
+                goto_page("search")
 
         c1, c2 = st.columns([1,2])
         
@@ -827,33 +936,60 @@ elif st.session_state.page == "detail":
 
             
             if st.button("Add to Watchlist", key=f"watch_{item.get('title','')}"):
-                conn = get_connection()
-                cur = conn.cursor()
-                
-                cur.execute(
-                    "SELECT id FROM watchlist WHERE user_id=%s AND title=%s",
-                    (st.session_state.user["id"], item["title"])
+                content_type = "Book" if st.session_state.content_type == "Books" else "Movie"
+                # default safety
+                watch_item = {
+                    "id": f"{content_type.lower()}_{item.get('title','')}",
+                    "title": item.get("title", ""),
+                    "content_type": content_type
+                }
+
+                add_to_watchlist(
+                    st.session_state.user["email"],
+                    watch_item
                 )
-                
-                if cur.fetchone():
-                    st.info("Already in your watchlist")
-                else:
-                    cur.execute(
-                        "INSERT INTO watchlist (user_id, title, content_type) VALUES (%s,%s,%s)",
-                        (
-                            st.session_state.user["id"],
-                            item["title"],
-                            st.session_state.content_type[:-1]
-                        )
+                st.success("Added to watchlist")
+
+            # ---------------- MOVIE AFFILIATE (DETAIL PAGE ONLY) ----------------
+            if st.session_state.content_type == "Movies":
+                st.markdown("### 🎬 Watch This Movie")
+
+                title = item.get("title", "")
+                prime_link = amazon_movie_affiliate_link(title)
+
+                if prime_link:
+                    # ✅ Amazon Prime (Affiliate)
+                    st.markdown(
+                        f"""
+                        <a href="{prime_link}" target="_blank" class="affiliate-btn">
+                            ▶ Watch on Amazon Prime
+                        </a>
+                        """,
+                        unsafe_allow_html=True
                     )
-                    conn.commit()
-                    st.session_state.watchlist.append(item["title"])
-                    st.success("Added to watchlist")
-                # ✅ CLOSE INSIDE BUTTON ONLY
-                cur.close()
-                conn.close()
+                else:
+                    # ❌ Not on Prime → show other platforms
+                    st.markdown(
+                        f"""
+                        <a href="https://www.netflix.com/search?q={title}"
+                            target="_blank" class="affiliate-btn">
+                            🔍 Search on Netflix
+                        </a>
+                        """,
+                        unsafe_allow_html=True
+                    )
 
+                    st.markdown(
+                    f"""
+                        <a href="https://www.hotstar.com/in/search?q={title}"
+                            target="_blank" class="affiliate-btn">
+                            🔍 Search on JioHotstar
+                        </a>
+                        """,
+                        unsafe_allow_html=True
+                    )
 
+  
         with c2:
             st.markdown(f"### {html_lib.escape(item.get('title',''))}")
             st.markdown(f"**Why recommended:** {html_lib.escape(item.get('explanation',''))}")
@@ -875,6 +1011,26 @@ elif st.session_state.page == "detail":
             if item.get("author"):
                 st.markdown("**Author**")
                 st.write(item.get("author"))
+            
+            # ---------------- BOOK AFFILIATE (DETAIL PAGE ONLY) ----------------
+            if st.session_state.content_type == "Books":
+                st.markdown("### 📚 Buy This Book")
+
+                title = item.get("title", "")
+                author = item.get("author", "")
+
+                book_link = amazon_book_affiliate_link(title, author)
+
+                if book_link:
+                    st.markdown(
+                        f"""
+                        <a href="{book_link}" target="_blank" class="affiliate-btn">
+                            🛒 Buy on Amazon
+                        </a>
+                        """,
+                        unsafe_allow_html=True
+                    )
+
 
             # trailer embedding if available
             trailer = item.get("trailer","")
@@ -888,68 +1044,60 @@ elif st.session_state.page == "detail":
 
         st.markdown("<div style='margin-top:16px;color:var(--muted)'>Use the Back button to return to recommendations.</div>", unsafe_allow_html=True)
 
-        # sidebar watchlist
-        st.sidebar.markdown("## About")
-        st.sidebar.write("AI Recommender — Mood & Goal based book and movie suggestions.")
-        st.sidebar.markdown("## Watchlist")
-        if st.session_state.watchlist:
-            for t in st.session_state.watchlist:
-                st.sidebar.write("- " + t)
-        else:
-            st.sidebar.write("_No saved items yet_")
 
 elif st.session_state.page == "watchlist":
+    
     st.markdown("<div class='title'>My Watchlist</div>", unsafe_allow_html=True)
 
     if st.button("← Back to Recommendations"):
         go_to("search")
         st.rerun()
 
-    tab1, tab2 = st.tabs(["Movies", "Books"])
+    # 🔹 Fetch from DB (single source of truth)
+    raw_watchlist = get_watchlist(st.session_state.user["email"])
+    watchlist = [
+        w for w in raw_watchlist
+        if isinstance(w, dict) and "content_type" in w
+    ]
 
-    conn = get_connection()
-    cur = conn.cursor(dictionary=True)
-
-    with tab1:
-        cur.execute(
-            "SELECT id, title FROM watchlist WHERE user_id=%s AND content_type='Movie'",
-            (st.session_state.user["id"],)
-        )
-        for row in cur.fetchall():
-            c1, c2 = st.columns([4,1])
-            c1.write(row["title"])
-            if c2.button("Remove", key=f"m{row['id']}"):
-                cur.execute("DELETE FROM watchlist WHERE id=%s", (row["id"],))
-                conn.commit()
-                if row["title"] in st.session_state.watchlist:
-                    st.session_state.watchlist.remove(row["title"])
-                st.rerun()
-
-
-    with tab2:
-        cur.execute(
-            "SELECT id, title FROM watchlist WHERE user_id=%s AND content_type='Book'",
-            (st.session_state.user["id"],)
-        )
-        for row in cur.fetchall():
-            c1, c2 = st.columns([4,1])
-            c1.write(row["title"])
-            if c2.button("Remove", key=f"b{row['id']}"):
-                cur.execute("DELETE FROM watchlist WHERE id=%s", (row["id"],))
-                conn.commit()
-                if row["title"] in st.session_state.watchlist:
-                    st.session_state.watchlist.remove(row["title"])
-                st.rerun()
-
-    cur.close()
-    conn.close()
-
-    # sidebar watchlist
-    st.sidebar.markdown("## About")
-    st.sidebar.write("AI Recommender — Mood & Goal based book and movie suggestions.")
-    st.sidebar.markdown("## Watchlist")
-    if st.session_state.watchlist:
-        for t in st.session_state.watchlist:
-            st.sidebar.write("- " + t)
+    if not watchlist:
+        st.info("Your watchlist is empty.")
     else:
-        st.sidebar.write("_No saved items yet_")
+        tab1, tab2 = st.tabs(["🎬 Movies", "📚 Books"])
+
+        # -------- MOVIES --------
+        with tab1:
+            movies = [w for w in watchlist if w["content_type"] == "Movie"]
+
+            if not movies:
+                st.info("No movies in watchlist.")
+            else:
+                for item in movies:
+                    col1, col2 = st.columns([4, 1])
+                    col1.write(item["title"])
+
+                    if col2.button("Remove", key=f"rm_movie_{item['id']}"):
+                        remove_from_watchlist(
+                            st.session_state.user["email"],
+                            item["id"]
+                        )
+                        st.rerun()
+
+        # -------- BOOKS --------
+        with tab2:
+            books = [w for w in watchlist if w["content_type"] == "Book"]
+
+            if not books:
+                st.info("No books in watchlist.")
+            else:
+                for item in books:
+                    col1, col2 = st.columns([4, 1])
+                    col1.write(item["title"])
+
+                    if col2.button("Remove", key=f"rm_book_{item['id']}"):
+                        remove_from_watchlist(
+                            st.session_state.user["email"],
+                            item["id"]
+                        )
+                        st.rerun()
+
